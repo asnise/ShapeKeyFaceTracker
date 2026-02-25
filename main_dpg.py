@@ -9,24 +9,61 @@ import os
 import socket
 import math
 import urllib.request
+import logging
+import sys
+import shutil
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
-# --- Constants & Paths ---
-if getattr(threading, 'frozen', False):
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-else:
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# --- Resource Path Handling ---
+def get_resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
 
-CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.json")
-MODEL_FILE = os.path.join(SCRIPT_DIR, "face_landmarker.task")
-REF_MAP_FILE = os.path.join(SCRIPT_DIR, "face_mesh.png")
+# Paths for writing (next to EXE or Script)
+BASE_DIR = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
+CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+MODEL_FILE = os.path.join(BASE_DIR, "face_landmarker.task")
+REF_MAP_FILE = os.path.join(BASE_DIR, "face_mesh.png")
+LOG_FILE = os.path.join(BASE_DIR, "tracker_log.txt")
+
+# --- Logging Setup ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, mode='w'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# URLs (Fallbacks)
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
 REF_MAP_URL = "https://raw.githubusercontent.com/google-ai-edge/mediapipe/master/mediapipe/modules/face_geometry/data/canonical_face_model_uv_visualization.png"
+# MediaPipe landmark indices for iris tracking
 
 # MediaPipe landmark indices for iris tracking
 EYE_R = {"iris": 468, "inner": 133, "outer": 33, "top": 159, "bottom": 145}
 EYE_L = {"iris": 473, "inner": 362, "outer": 263, "top": 386, "bottom": 374}
+
+# --- Default Presets (Embedded) ---
+DEFAULT_PRESETS = {
+    "Mouth Standard": {
+        "x": {"radius_min": 0.2935, "radius_max": 0.3967, "out_min": -1.0, "out_max": 1.0, "sens": 1.0, "point_a": 291, "point_b": 61, "mode": "2pt (Dist)", "exp_power": 1.2, "lerp_en": False, "lerp_fac": 0.15},
+        "y": {"radius_min": 0.0625, "radius_max": 0.4397, "out_min": -1.0, "out_max": 1.0, "sens": 1.25, "point_a": 0, "point_b": 16, "mode": "2pt (Dist)", "exp_power": 1.2, "lerp_en": False, "lerp_fac": 0.15}
+    },
+    "Eyes Tracking": {
+        "x": {"radius_min": 0.02, "radius_max": 0.25, "out_min": 0.0, "out_max": 1.0, "sens": 1.0, "point_a": 468, "point_b": 33, "mode": "iris", "exp_power": 0.75, "lerp_en": False, "lerp_fac": 0.15},
+        "y": {"radius_min": 0.02, "radius_max": 0.25, "out_min": 0.0, "out_max": -1.0, "sens": 1.0, "point_a": 473, "point_b": 386, "mode": "iris", "exp_power": 1.2, "lerp_en": False, "lerp_fac": 0.15}
+    },
+    "Eye Blink (Y)": {
+        "x": {"radius_min": 0.02, "radius_max": 0.25, "out_min": 0.0, "out_max": 1.0, "sens": 1.0, "point_a": 0, "point_b": 0, "mode": "None", "exp_power": 1.2, "lerp_en": False, "lerp_fac": 0.15},
+        "y": {"radius_min": 0.0415, "radius_max": 0.1083, "out_min": -1.0, "out_max": 0.0, "sens": 1.5, "point_a": 374, "point_b": 475, "mode": "2pt (Dist)", "exp_power": 0.816, "lerp_en": False, "lerp_fac": 0.01}
+    }
+}
 
 def calculate_distance(p1, p2):
     return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2 + (p1.z - p2.z)**2)
@@ -45,9 +82,11 @@ class FaceTrackerAppDPG:
         self.camera_active = True # For Backend
         self.send_enabled = True
         self.draw_mesh = True
+        self.initialized = False
         
         self.latest_landmarks = None
-        self.active_points = set()
+        self.active_points_x = set()
+        self.active_points_y = set()
         self.hover_id = -1
         self.selected_id = -1
         self.fps = 0
@@ -77,24 +116,37 @@ class FaceTrackerAppDPG:
         with dpg.handler_registry():
             dpg.add_mouse_click_handler(callback=self._handle_click)
         
-        dpg.create_viewport(title="ShapeKey Face Tracker (DPG High-Performance)", width=1200, height=1000)
+        dpg.create_viewport(title="ShapeKey Face Tracker (DPG High-Performance)", width=1400, height=900)
         dpg.setup_dearpygui()
         dpg.show_viewport()
+        
+        dpg.set_viewport_resize_callback(self._on_resize)
         
         self.tracker_thread = threading.Thread(target=self.run_tracker_loop, daemon=True)
         self.tracker_thread.start()
 
     def _ensure_assets(self):
+        # 1. Try to unpack from EXE (MEIPASS) if they don't exist locally
+        for filename in ["face_landmarker.task", "face_mesh.png"]:
+            local_path = os.path.join(BASE_DIR, filename)
+            if not os.path.exists(local_path):
+                bundled_path = get_resource_path(filename)
+                if os.path.exists(bundled_path):
+                    logger.info(f"Unpacking bundled asset: {filename}")
+                    shutil.copy2(bundled_path, local_path)
+
+        # 2. If still missing, download (emergency fallback)
         if not os.path.exists(MODEL_FILE):
-            print("Downloading model...")
+            logger.info("Model missing and not bundled. Downloading...")
             urllib.request.urlretrieve(MODEL_URL, MODEL_FILE)
         if not os.path.exists(REF_MAP_FILE):
             try:
-                print("Downloading mesh map...")
+                logger.info("Mesh map missing and not bundled. Downloading...")
                 req = urllib.request.Request(REF_MAP_URL, headers={'User-Agent': 'Mozilla/5.0'})
                 with open(REF_MAP_FILE, 'wb') as f:
                     f.write(urllib.request.urlopen(req).read())
-            except: pass
+            except Exception as e:
+                logger.error(f"Failed to download mesh map: {e}")
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -118,6 +170,39 @@ class FaceTrackerAppDPG:
         dpg.set_value("toast_text", message)
         dpg.configure_item("toast_text", color=color)
         threading.Timer(2.0, lambda: dpg.set_value("toast_text", "")).start()
+
+    def _on_resize(self):
+        if not dpg.is_dearpygui_running(): return
+        w = dpg.get_viewport_width()
+        h = dpg.get_viewport_height()
+        
+        # Threshold for switching to vertical stack
+        is_narrow = w < 1250
+        
+        # Toggle Layout Mode
+        if dpg.does_item_exist("main_layout_group"):
+            dpg.configure_item("main_layout_group", horizontal=not is_narrow)
+
+        # Calculate dynamic heights
+        if not is_narrow:
+            # DESKTOP MODE (3 Columns)
+            main_content_h = h - 60
+            dpg.configure_item("left_col", width=450, height=main_content_h)
+            dpg.configure_item("mid_col", width=660, height=main_content_h)
+            dpg.configure_item("right_col", width=-1, height=main_content_h)
+            
+            if dpg.does_item_exist("inspector_scroll"): dpg.configure_item("inspector_scroll", height=main_content_h - 260)
+            if dpg.does_item_exist("cam_window"): dpg.configure_item("cam_window", height=main_content_h - 20)
+            if dpg.does_item_exist("log_child_window"): dpg.configure_item("log_child_window", height=main_content_h - 60)
+        else:
+            # MOBILE/NARROW MODE (Vertical Stack)
+            dpg.configure_item("left_col", width=-1, height=500)
+            dpg.configure_item("mid_col", width=-1, height=800)
+            dpg.configure_item("right_col", width=-1, height=300)
+            
+            if dpg.does_item_exist("inspector_scroll"): dpg.configure_item("inspector_scroll", height=240)
+            if dpg.does_item_exist("cam_window"): dpg.configure_item("cam_window", height=780)
+            if dpg.does_item_exist("log_child_window"): dpg.configure_item("log_child_window", height=220)
 
     def fetch_groups(self):
         try:
@@ -173,9 +258,18 @@ class FaceTrackerAppDPG:
 
     def build_ui(self):
         with dpg.window(tag="Primary Window"):
-            with dpg.group(horizontal=True):
+            # Initialization Overlay
+            with dpg.window(label="Initializing", modal=True, show=True, tag="init_window", no_title_bar=True, no_move=True, no_resize=True, width=400, height=150, pos=(400, 300)):
+                dpg.add_spacer(height=20)
+                dpg.add_text("   🚀 INITIALIZING SYSTEM...", color=(100, 200, 255))
+                dpg.add_spacer(height=10)
+                dpg.add_loading_indicator(style=1, radius=3, color=(100, 200, 255))
+                dpg.add_spacer(height=10)
+                dpg.add_text("Please wait while we setup assets...", tag="init_status", color=(150, 150, 150))
+
+            with dpg.group(horizontal=True, tag="main_layout_group"):
                 # --- LEFT COLUMN: Settings ---
-                with dpg.child_window(width=450, border=True):
+                with dpg.child_window(width=450, border=True, tag="left_col"):
                     dpg.add_text("⚡ SHAPEKEY TRACKER PROFESSIONAL", color=(100, 200, 255))
                     dpg.add_text("", tag="toast_text")
                     
@@ -198,8 +292,19 @@ class FaceTrackerAppDPG:
                         dpg.add_button(label="+ NEW GROUP", width=200, callback=self.on_add_group)
                         dpg.add_button(label="- DELETE GROUP", width=204, callback=self.on_remove_group)
 
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(label="📤 EXPORT PRESET", width=200, callback=self.on_export_preset)
+                        dpg.add_button(label="📥 IMPORT PRESET", width=204, callback=self.on_import_preset)
+
+                    dpg.add_spacer(height=5)
+                    dpg.add_text("Quick Auto Mapping:", color=(200, 200, 100))
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(label="👄 MOUTH", width=132, callback=lambda: self._apply_hardcoded_preset("Mouth Standard"))
+                        dpg.add_button(label="👁 EYES", width=132, callback=lambda: self._apply_hardcoded_preset("Eyes Tracking"))
+                        dpg.add_button(label="😑 BLINK", width=132, callback=lambda: self._apply_hardcoded_preset("Eye Blink (Y)"))
+
                     dpg.add_spacer(height=10)
-                    with dpg.child_window(height=600, border=False):
+                    with dpg.child_window(tag="inspector_scroll", border=False):
                         with dpg.tab_bar():
                             for axis in ["X", "Y"]:
                                 with dpg.tab(label=f"Edit {axis} Mapping"):
@@ -208,9 +313,9 @@ class FaceTrackerAppDPG:
                     dpg.add_spacer(height=5)
                     dpg.add_button(label="SAVE PERMANENTLY", width=-1, height=45, callback=self.save_config)
 
-                # --- RIGHT COLUMN: Viewport ---
-                with dpg.group():
-                    with dpg.child_window(width=-1, height=520, border=True, tag="cam_window"):
+                # --- MIDDLE COLUMN: Viewport ---
+                with dpg.group(width=660, tag="mid_col"):
+                    with dpg.child_window(border=True, tag="cam_window"):
                         dpg.add_image("camera_texture", width=640, height=480, tag="cam_image")
                         
                         with dpg.group(horizontal=True):
@@ -220,20 +325,22 @@ class FaceTrackerAppDPG:
                             dpg.add_spacer(width=20)
                             dpg.add_text("Selected: None", tag="selected_id_text", color=(255, 100, 100))
 
-                    with dpg.child_window(width=-1, height=-1, border=True):
-                        dpg.add_text("LIVE JOYSTICK FEEDBACK")
+                        dpg.add_spacer(height=10)
+                        dpg.add_separator()
+                        dpg.add_spacer(height=5)
+                        dpg.add_text("🕹 LIVE JOYSTICK & STATUS")
                         with dpg.group(horizontal=True):
-                            with dpg.drawlist(width=200, height=200):
-                                dpg.draw_rectangle((0, 0), (200, 200), color=(150, 150, 150), thickness=2)
-                                dpg.draw_rectangle((2, 2), (198, 198), fill=(30, 30, 35))
-                                dpg.draw_line((0, 100), (200, 100), color=(60, 60, 65))
-                                dpg.draw_line((100, 0), (100, 200), color=(60, 60, 65))
-                                dpg.draw_circle((100, 100), 8, color=(100, 200, 255), fill=(80, 150, 255, 150), tag="joy_dot")
-                                dpg.draw_line((100, 100), (100, 100), color=(100, 200, 255, 100), tag="joy_line")
+                            with dpg.drawlist(width=160, height=160):
+                                dpg.draw_rectangle((0, 0), (160, 160), color=(150, 150, 150), thickness=2)
+                                dpg.draw_rectangle((2, 2), (158, 158), fill=(30, 30, 35))
+                                dpg.draw_line((0, 80), (160, 80), color=(60, 60, 65))
+                                dpg.draw_line((80, 0), (80, 160), color=(60, 60, 65))
+                                dpg.draw_circle((80, 80), 8, color=(100, 200, 255), fill=(80, 150, 255, 150), tag="joy_dot")
+                                dpg.draw_line((80, 80), (80, 80), color=(100, 200, 255, 100), tag="joy_line")
                             
                             with dpg.group():
                                 dpg.add_spacer(width=20)
-                                dpg.add_text("Current Status:", color=(100, 150, 255))
+                                dpg.add_text("Current Values:", color=(100, 150, 255))
                                 with dpg.group(horizontal=True):
                                     dpg.add_text("X:", color=(150, 150, 150))
                                     dpg.add_text("0.000", tag="val_xo")
@@ -244,11 +351,18 @@ class FaceTrackerAppDPG:
                                     dpg.add_text("0.000", tag="val_yo")
                                     dpg.add_text("raw:", color=(80, 80, 80))
                                     dpg.add_text("0.0000", tag="val_yr")
+                
+                # --- RIGHT COLUMN: Realtime Log ---
+                with dpg.child_window(width=-1, border=True, tag="right_col"):
+                    dpg.add_text("📝 REAL-TIME CONSOLE LOG", color=(255, 200, 100))
+                    dpg.add_separator()
+                    with dpg.child_window(tag="log_child_window", border=False):
+                        dpg.add_text("", tag="realtime_log_text")
 
     def build_axis_ui(self, axis):
         p = f"{axis}_"
         dpg.add_text("Mode Selection:")
-        dpg.add_radio_button(["2pt (Dist)", "1pt (Proj)", "iris"], horizontal=True, tag=p+"mode", 
+        dpg.add_radio_button(["None", "2pt (Dist)", "1pt (Proj)", "iris"], horizontal=True, tag=p+"mode", 
                              callback=lambda: self._sync_ui_to_data())
         
         with dpg.group(horizontal=True):
@@ -265,21 +379,32 @@ class FaceTrackerAppDPG:
             dpg.add_button(label=f"Eye {axis.upper()} L", small=True, callback=lambda: self._apply_eye_preset(axis, "L"))
 
         dpg.add_spacer(height=5)
-        dpg.add_slider_float(label="Radius Min", max_value=2.0, tag=p+"rmin", callback=lambda: self._sync_ui_to_data())
-        dpg.add_slider_float(label="Radius Max", max_value=2.0, tag=p+"rmax", callback=lambda: self._sync_ui_to_data())
+        self._add_slider_text("Radius Min", p+"rmin", 0.0, 2.0)
+        self._add_slider_text("Radius Max", p+"rmax", 0.0, 2.0)
         
         with dpg.group(horizontal=True):
-            dpg.add_button(label="CALIBRATE MIN", width=200, callback=lambda: self.calibrate(axis, "min"))
-            dpg.add_button(label="CALIBRATE MAX", width=200, callback=lambda: self.calibrate(axis, "max"))
+            dpg.add_button(label="CALIBRATE MIN", width=210, callback=lambda: self.calibrate(axis, "min"))
+            dpg.add_button(label="CALIBRATE MAX", width=210, callback=lambda: self.calibrate(axis, "max"))
 
         dpg.add_separator()
-        dpg.add_slider_float(label="Out Min", min_value=-1.0, max_value=1.0, tag=p+"omin", callback=lambda: self._sync_ui_to_data())
-        dpg.add_slider_float(label="Out Max", min_value=-1.0, max_value=1.0, tag=p+"omax", callback=lambda: self._sync_ui_to_data())
-        dpg.add_slider_float(label="Sensitivity", min_value=0.1, max_value=5.0, tag=p+"sens", callback=lambda: self._sync_ui_to_data())
-        dpg.add_slider_float(label="Exp Power", min_value=0.5, max_value=3.0, tag=p+"exp", callback=lambda: self._sync_ui_to_data())
+        self._add_slider_text("Out Min", p+"omin", -1.0, 1.0)
+        self._add_slider_text("Out Max", p+"omax", -1.0, 1.0)
+        self._add_slider_text("Sensitivity", p+"sens", 0.1, 5.0)
+        self._add_slider_text("Exp Power", p+"exp", 0.5, 3.0)
         
         dpg.add_checkbox(label="Enable Smoothing", tag=p+"lerp_en", callback=lambda: self._sync_ui_to_data())
-        dpg.add_slider_float(label="Smooth Speed", min_value=0.01, max_value=0.5, tag=p+"lerp_fac", callback=lambda: self._sync_ui_to_data())
+        self._add_slider_text("Smooth Speed", p+"lerp_fac", 0.01, 0.5)
+
+    def _add_slider_text(self, label, tag, min_v=0.0, max_v=1.0, format="%.3f"):
+        with dpg.group(horizontal=True):
+            with dpg.group(width=110): # Using a sub-group to enforce width for the label area
+                dpg.add_text(f"{label}:")
+            # Slider with no label and no internal format display (to avoid clutter)
+            dpg.add_slider_float(width=190, min_value=min_v, max_value=max_v, tag=tag, 
+                                 format="", callback=lambda: self._sync_ui_to_data())
+            # Precise input field linked to the same tag (source)
+            dpg.add_input_float(width=100, source=tag, step=0, step_fast=0, 
+                                format=format, callback=lambda: self._sync_ui_to_data())
 
     def _apply_eye_preset(self, axis, eye_key):
         e = EYE_R if eye_key == "R" else EYE_L
@@ -336,6 +461,67 @@ class FaceTrackerAppDPG:
                 dpg.set_value("group_combo", items[0])
                 self.on_group_select(None, items[0])
 
+    def on_export_preset(self):
+        if not self.current_group_name:
+            self._show_toast("⚠ Select a group first", (255, 200, 0))
+            return
+        
+        self._sync_ui_to_data()
+        group_data = self.groups_data[self.current_group_name]
+        filename = f"preset_{self.current_group_name}.json"
+        
+        try:
+            with open(filename, "w") as f:
+                json.dump(group_data, f, indent=4)
+            self._show_toast(f"✓ Exported to {filename}", (0, 255, 120))
+            # Open the folder to show the user where the file is
+            if os.name == 'nt': os.startfile(os.getcwd())
+        except Exception as e:
+            self._show_toast(f"✗ Export Error: {e}", (255, 50, 50))
+
+    def on_import_preset(self):
+        if not self.current_group_name:
+            self._show_toast("⚠ Select/Create a group first", (255, 200, 0))
+            return
+
+        # Simplified file selection for DPG (looking for local json files)
+        # In a real app we'd use a file dialog, but for now we look for preset_*.json
+        files = [f for f in os.listdir(".") if f.endswith(".json") and f != "config.json"]
+        if not files:
+            self._show_toast("✗ No .json presets found in folder", (255, 100, 100))
+            return
+
+        def _do_import(sender, file_name):
+            try:
+                with open(file_name, "r") as f:
+                    new_data = json.load(f)
+                self.groups_data[self.current_group_name] = new_data
+                self._populate_ui_from_data(self.current_group_name)
+                dpg.delete_item("import_window")
+                self._show_toast(f"✓ Imported {file_name}", (0, 255, 120))
+            except Exception as e:
+                self._show_toast(f"✗ Import Error: {e}", (255, 50, 50))
+
+        if dpg.does_item_exist("import_window"): dpg.delete_item("import_window")
+        
+        with dpg.window(label="Select Preset to Import", modal=True, tag="import_window", width=300, height=200, pos=(400, 300)):
+            dpg.add_text("Choose a file to load into current group:")
+            for f in files:
+                dpg.add_button(label=f, width=-1, callback=_do_import, user_data=f)
+            dpg.add_spacer(height=10)
+            dpg.add_button(label="Cancel", width=-1, callback=lambda: dpg.delete_item("import_window"))
+
+    def _apply_hardcoded_preset(self, preset_name):
+        if not self.current_group_name:
+            self._show_toast("⚠ Select a group first", (255, 200, 0))
+            return
+        
+        preset = DEFAULT_PRESETS.get(preset_name)
+        if preset:
+            self.groups_data[self.current_group_name] = preset
+            self._populate_ui_from_data(self.current_group_name)
+            self._show_toast(f"✓ Applied {preset_name} Preset", (100, 255, 150))
+
     def _sync_ui_to_data(self):
         if not self.current_group_name: return
         group = self.groups_data[self.current_group_name]
@@ -371,13 +557,37 @@ class FaceTrackerAppDPG:
             dpg.set_value(p+"lerp_fac", a.get("lerp_fac", 0.15))
 
     def run_tracker_loop(self):
-        landmarker = vision.FaceLandmarker.create_from_options(vision.FaceLandmarkerOptions(
-            base_options=python.BaseOptions(model_asset_path=MODEL_FILE),
-            running_mode=vision.RunningMode.VIDEO, output_face_blendshapes=True
-        ))
-        cap = cv2.VideoCapture(self.config.get("camera_index", 0))
-        last_t = time.time()
+        logger.info("Unpacking assets...")
+        self._ensure_assets()
+        dpg.set_value("init_status", "Checking Camera Access...")
         
+        try:
+            landmarker = vision.FaceLandmarker.create_from_options(vision.FaceLandmarkerOptions(
+                base_options=python.BaseOptions(model_asset_path=MODEL_FILE),
+                running_mode=vision.RunningMode.VIDEO, output_face_blendshapes=True
+            ))
+            logger.info("Mediapipe Landmarker initialized.")
+        except Exception as e:
+            logger.error(f"Landmarker init failed: {e}")
+            dpg.set_value("init_status", "FATAL ERROR: See tracker_log.txt")
+            return
+
+        cam_idx = self.config.get("camera_index", 0)
+        logger.info(f"Opening camera index: {cam_idx}")
+        cap = cv2.VideoCapture(cam_idx)
+        
+        if not cap.isOpened():
+            logger.error(f"Failed to open camera {cam_idx}")
+            dpg.set_value("init_status", f"CAMERA ERROR: Index {cam_idx} not found")
+            return
+
+        dpg.set_value("init_status", "Ready!")
+        time.sleep(1.2)
+        dpg.delete_item("init_window")
+        self.initialized = True
+        logger.info("System Initialized.")
+
+        last_t = time.time()
         while self.running:
             success, raw_frame = cap.read()
             if not success: continue
@@ -389,7 +599,8 @@ class FaceTrackerAppDPG:
             
             results = landmarker.detect_for_video(mp_img, int(time.time() * 1000))
             payload = {}
-            self.active_points = set()
+            self.active_points_x = set()
+            self.active_points_y = set()
             self.hover_id = -1
 
             if results.face_landmarks:
@@ -421,29 +632,50 @@ class FaceTrackerAppDPG:
                         mode, ia, ib = m.get("mode", ""), int(m.get("point_a", 0)), int(m.get("point_b", 0))
                         
                         raw = 0.0
-                        if "iris" in mode:
+                        if mode == "None":
+                            raw = 0.0
+                        elif "iris" in mode:
                             ek = "L" if ib == EYE_L["outer"] or ib == EYE_L["top"] else "R"
                             e = EYE_L if ek == "L" else EYE_R
                             pa, pi, po = lms[e["iris"]], lms[e["inner"]], lms[e["outer"]]
                             pt, pb = lms[e["top"]], lms[e["bottom"]]
                             ew = abs(pi.x-po.x) or 1.0
-                            if abs(pt.y-pb.y) > 0.25 * ew:
-                                inst = (pa.x - (pi.x+po.x)/2)/ew if axis=="x" else (pa.y - (pt.y+pb.y)/2)/ew
+                            eh = abs(pt.y-pb.y) or 0.1
+                            
+                            # Vertical axis is often less sensitive, adjust or relax blink protection
+                            if eh > 0.05 * ew: # Relaxed from 0.25 to allow tracking more closed eyes
+                                if axis == "x":
+                                    inst = (pa.x - (pi.x+po.x)/2)/ew
+                                else:
+                                    # Y Axis: pa.y increases downwards. Look Up -> pa.y small -> inst negative.
+                                    # We multiply by -1 if we want Look Up to be Positive.
+                                    # But we'll keep it raw and let user set mins/maxes, 
+                                    # just ensure it's normalized to the horizontal width for scale stability.
+                                    inst = (pa.y - (pt.y+pb.y)/2)/ew * 2.0 # Extra gain for Y as vertical travel is smaller
+                                    
                                 self._iris_ema[ek][axis] += 0.3 * (inst - self._iris_ema[ek][axis])
+                            
                             raw = self._iris_ema[ek][axis]
                             pex = m.get("exp_power", 1.2)
                             raw = math.copysign(abs(raw)**pex, raw)
-                            self.active_points.update([e["iris"], e["inner"], e["outer"], e["top"], e["bottom"]])
+                            
+                            points = [e["iris"], e["inner"], e["outer"], e["top"], e["bottom"]]
+                            if axis == "x": self.active_points_x.update(points)
+                            else: self.active_points_y.update(points)
                         elif "1pt" in mode:
                             pa, pb = lms[ia], lms[ib]
                             vec = (pa.x-pb.x, pa.y-pb.y, pa.z-pb.z)
                             f_v = fx_v if axis=="x" else fy_v
                             dot = (vec[0]*f_v[0] + vec[1]*f_v[1] + vec[2]*f_v[2])
                             raw = (dot / f_width) * 10.0
-                            self.active_points.update([ia, ib])
-                        else: # 2pt Distance
+                            if axis == "x": self.active_points_x.update([ia, ib])
+                            else: self.active_points_y.update([ia, ib])
+                        elif "2pt" in mode: # Explicit 2pt
                             raw = calculate_distance(lms[ia], lms[ib]) / f_width
-                            self.active_points.update([ia, ib])
+                            if axis == "x": self.active_points_x.update([ia, ib])
+                            else: self.active_points_y.update([ia, ib])
+                        else:
+                            raw = 0.0
 
                         if gn == self.current_group_name: self.current_vals[f"r{axis}"] = raw
                         
@@ -475,7 +707,9 @@ class FaceTrackerAppDPG:
                     px, py = int(lm.x*f_w), int(lm.y*f_h)
                     if i == self.selected_id: color, size = (0, 0, 255), 3 # Red
                     elif i == self.hover_id: color, size = (0, 255, 255), 4 # Yellow
-                    elif i in self.active_points: color, size = (255, 100, 0), 2 # Blue
+                    elif i in self.active_points_x and i in self.active_points_y: color, size = (255, 255, 255), 2 # White (Both)
+                    elif i in self.active_points_x: color, size = (255, 100, 0), 2 # Orange (X)
+                    elif i in self.active_points_y: color, size = (0, 150, 255), 2 # Blue (Y)
                     else: color, size = (0, 255, 100), 1 # Green
                     cv2.circle(display_frame, (px, py), size, color, -1)
 
@@ -498,8 +732,8 @@ class FaceTrackerAppDPG:
                 dpg.set_value("val_yr", f"{self.current_vals['ry']:.4f}")
                 dpg.set_value("val_yo", f"{self.current_vals['y']:.3f}")
                 # Update Joystick Marker
-                jx = 100 + (self.current_vals['x'] * 100)
-                jy = 100 - (self.current_vals['y'] * 100)
+                jx = 80 + (self.current_vals['x'] * 80)
+                jy = 80 - (self.current_vals['y'] * 80)
                 dpg.configure_item("joy_dot", center=(jx, jy))
                 dpg.configure_item("joy_line", p2=(jx, jy))
 

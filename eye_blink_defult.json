@@ -1,0 +1,28 @@
+{
+    "x": {
+        "radius_min": 0.019999999552965164,
+        "radius_max": 0.25,
+        "out_min": 0.0,
+        "out_max": 1.0,
+        "sens": 1.0,
+        "lerp_en": false,
+        "lerp_fac": 0.15000000596046448,
+        "point_a": 0,
+        "point_b": 0,
+        "mode": "None",
+        "exp_power": 1.2000000476837158
+    },
+    "y": {
+        "radius_min": 0.0415191650390625,
+        "radius_max": 0.10831038653850555,
+        "out_min": -1.0,
+        "out_max": 0.0,
+        "sens": 1.5,
+        "lerp_en": false,
+        "lerp_fac": 0.009999999776482582,
+        "point_a": 374,
+        "point_b": 475,
+        "mode": "2pt (Dist)",
+        "exp_power": 0.8160919547080994
+    }
+}

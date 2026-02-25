@@ -1,0 +1,34 @@
+{
+    "x": {
+        "radius_min": 0.019999999552965164,
+        "radius_max": 0.25,
+        "out_min": 0.0,
+        "out_max": 1.0,
+        "sens": 1.0,
+        "point_a": 468,
+        "lerp_en": false,
+        "lerp_fac": 0.15000000596046448,
+        "mode": "iris",
+        "point_b": 33,
+        "point_bottom": 374,
+        "point_inner": 263,
+        "point_outer": 362,
+        "exp_power": 0.75
+    },
+    "y": {
+        "radius_min": 0.019999999552965164,
+        "radius_max": 0.25,
+        "out_min": 0.0,
+        "out_max": -1.0,
+        "sens": 1.0,
+        "point_a": 473,
+        "lerp_en": false,
+        "lerp_fac": 0.15000000596046448,
+        "mode": "iris",
+        "point_b": 386,
+        "point_bottom": 374,
+        "point_outer": 362,
+        "point_inner": 263,
+        "exp_power": 1.2000000476837158
+    }
+}
