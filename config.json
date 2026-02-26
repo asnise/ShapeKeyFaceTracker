@@ -4,95 +4,69 @@
     "camera_index": 0,
     "draw_mesh": true,
     "groups": {
-        "Eye_Eye": {
+        "Armature_L_Hand": {
             "x": {
-                "radius_min": 0.019999999552965164,
-                "radius_max": 0.25,
-                "out_min": 0.0,
-                "out_max": 1.0,
-                "sens": 1.0,
-                "point_a": 468,
-                "lerp_en": false,
-                "lerp_fac": 0.15000000596046448,
-                "mode": "iris",
-                "point_b": 33,
-                "point_bottom": 374,
-                "point_inner": 263,
-                "point_outer": 362,
-                "exp_power": 0.75
-            },
-            "y": {
-                "radius_min": 0.019999999552965164,
-                "radius_max": 0.25,
-                "out_min": 0.0,
-                "out_max": -1.0,
-                "sens": 1.0,
-                "point_a": 473,
-                "lerp_en": false,
-                "lerp_fac": 0.15000000596046448,
-                "mode": "iris",
-                "point_b": 386,
-                "point_bottom": 374,
-                "point_outer": 362,
-                "point_inner": 263,
-                "exp_power": 1.2000000476837158
-            }
-        },
-        "Plane.015_Mouth": {
-            "x": {
-                "radius_min": 0.29350000619888306,
-                "radius_max": 0.396699994802475,
-                "out_min": -1.0,
-                "out_max": 1.0,
-                "sens": 1.0,
-                "lerp_en": false,
-                "lerp_fac": 0.15000000596046448,
-                "point_a": 291,
-                "point_b": 61,
-                "mode": "2pt",
-                "exp_power": 1.2000000476837158
-            },
-            "y": {
-                "radius_min": 0.0625,
-                "radius_max": 0.43970000743865967,
-                "out_min": -1.0,
-                "out_max": 1.0,
-                "sens": 1.25,
-                "point_a": 0,
-                "point_b": 16,
-                "lerp_en": false,
-                "lerp_fac": 0.15000000596046448,
-                "mode": "2pt",
-                "exp_power": 1.2000000476837158
-            }
-        },
-        "Plane.015_Eye": {
-            "x": {
-                "radius_min": 0.019999999552965164,
-                "radius_max": 0.25,
-                "out_min": 0.0,
-                "out_max": 1.0,
-                "sens": 1.0,
-                "lerp_en": false,
-                "lerp_fac": 0.15000000596046448,
+                "mode": "None",
                 "point_a": 0,
                 "point_b": 0,
-                "mode": "2pt (Dist)",
-                "exp_power": 1.2000000476837158
+                "radius_min": 0.0,
+                "radius_max": 1.0,
+                "out_min": 0.0,
+                "out_max": 1.0,
+                "sens": 1.0,
+                "exp_power": 1.2000000476837158,
+                "lerp_en": false,
+                "lerp_fac": 0.15000000596046448
             },
             "y": {
-                "radius_min": 0.0415191650390625,
-                "radius_max": 0.10831038653850555,
-                "out_min": -1.0,
-                "out_max": 0.0,
-                "sens": 1.5,
+                "mode": "None",
+                "point_a": 0,
+                "point_b": 0,
+                "radius_min": 0.0,
+                "radius_max": 1.0,
+                "out_min": 0.0,
+                "out_max": 1.0,
+                "sens": 1.0,
+                "exp_power": 1.2000000476837158,
                 "lerp_en": false,
-                "lerp_fac": 0.009999999776482582,
-                "point_a": 374,
-                "point_b": 475,
-                "mode": "2pt (Dist)",
-                "exp_power": 0.8160919547080994
+                "lerp_fac": 0.15000000596046448
             }
+        }
+    },
+    "active_models": [
+        "Hand",
+        "Face"
+    ],
+    "hand_setup": {
+        "thumb": {
+            "tip": 4,
+            "base": 0,
+            "rmin": 0.05000000074505806,
+            "rmax": 0.15000000596046448
+        },
+        "index": {
+            "tip": 8,
+            "base": 0,
+            "rmin": 0.05000000074505806,
+            "rmax": 0.15000000596046448
+        },
+        "middle": {
+            "tip": 12,
+            "base": 0,
+            "rmin": 0.05000000074505806,
+            "rmax": 0.15000000596046448
+        },
+        "ring": {
+            "tip": 16,
+            "base": 0,
+            "rmin": 0.05000000074505806,
+            "rmax": 0.15000000596046448
+        },
+        "pinky": {
+            "tip": 20,
+            "base": 0,
+            "rmin": 0.05000000074505806,
+            "rmax": 0.15000000596046448
         }
     }
 }

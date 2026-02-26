@@ -26,6 +26,7 @@ def get_resource_path(relative_path):
 BASE_DIR = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 MODEL_FILE = os.path.join(BASE_DIR, "face_landmarker.task")
+HAND_MODEL_FILE = os.path.join(BASE_DIR, "hand_landmarker.task")
 REF_MAP_FILE = os.path.join(BASE_DIR, "face_mesh.png")
 LOG_FILE = os.path.join(BASE_DIR, "tracker_log.txt")
 
@@ -42,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 # URLs (Fallbacks)
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+HAND_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
 REF_MAP_URL = "https://raw.githubusercontent.com/google-ai-edge/mediapipe/master/mediapipe/modules/face_geometry/data/canonical_face_model_uv_visualization.png"
 # MediaPipe landmark indices for iris tracking
 
@@ -127,7 +129,7 @@ class FaceTrackerAppDPG:
 
     def _ensure_assets(self):
         # 1. Try to unpack from EXE (MEIPASS) if they don't exist locally
-        for filename in ["face_landmarker.task", "face_mesh.png"]:
+        for filename in ["face_landmarker.task", "hand_landmarker.task", "face_mesh.png"]:
             local_path = os.path.join(BASE_DIR, filename)
             if not os.path.exists(local_path):
                 bundled_path = get_resource_path(filename)
@@ -137,8 +139,11 @@ class FaceTrackerAppDPG:
 
         # 2. If still missing, download (emergency fallback)
         if not os.path.exists(MODEL_FILE):
-            logger.info("Model missing and not bundled. Downloading...")
+            logger.info("Face model missing and not bundled. Downloading...")
             urllib.request.urlretrieve(MODEL_URL, MODEL_FILE)
+        if not os.path.exists(HAND_MODEL_FILE):
+            logger.info("Hand model missing and not bundled. Downloading...")
+            urllib.request.urlretrieve(HAND_MODEL_URL, HAND_MODEL_FILE)
         if not os.path.exists(REF_MAP_FILE):
             try:
                 logger.info("Mesh map missing and not bundled. Downloading...")
